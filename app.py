@@ -483,11 +483,10 @@ def safe_filename(customer_name: str) -> str:
 # --------------------------------------------------------------------------- #
 def render_sidebar():
     with st.sidebar:
-        st.markdown("## ⚙️ Configuration")
+        st.markdown("### ⚙️ Settings")
 
-        token_ok = bool(os.environ.get("GITHUB_TOKEN"))
-        if token_ok:
-            st.success("GITHUB_TOKEN loaded", icon="🔑")
+        if os.environ.get("GITHUB_TOKEN"):
+            st.caption("🔑 GITHUB_TOKEN loaded")
         else:
             st.error("GITHUB_TOKEN missing — add it to your `.env`", icon="🔒")
 
@@ -503,25 +502,20 @@ def render_sidebar():
         st.caption("**Provider:** GitHub Models · OpenAI-compatible endpoint")
         st.divider()
 
-        st.markdown("### 📎 Invoice Template")
         uploaded_template = st.file_uploader(
-            "Upload your `template.docx`",
+            "Word template (.docx)",
             type="docx",
-            help="A Word document containing Jinja2 placeholder tags.",
+            help="Optional — the bundled template.docx is used if you don't upload one.",
         )
 
-        bundled_exists = os.path.exists(BUNDLED_TEMPLATE)
         if uploaded_template is not None:
-            st.success(f"Using **{uploaded_template.name}**", icon="✅")
-        elif bundled_exists:
-            st.info(f"No upload — falling back to bundled **{BUNDLED_TEMPLATE}**", icon="📄")
+            st.caption(f"Using **{uploaded_template.name}**")
+        elif os.path.exists(BUNDLED_TEMPLATE):
+            st.caption(f"Using bundled **{BUNDLED_TEMPLATE}**")
         else:
-            st.warning("No template available. Upload one, or run `python create_template.py`.", icon="⚠️")
+            st.warning("No template found. Run `python create_template.py`.", icon="⚠️")
 
-        st.divider()
-
-        st.markdown("### 🏷️ Required template tags")
-        with st.expander("Header & footer fields", expanded=False):
+        with st.expander("Template tags", expanded=False):
             st.code(
                 "{{ company_name }}\n"
                 "{{ invoice_number }}\n"
@@ -534,40 +528,21 @@ def render_sidebar():
                 "{{ order_total }}",
                 language="jinja2",
             )
-        with st.expander("Products table loop", expanded=False):
             st.markdown(
-                "Build a 5-column Word table (`CODE`, `PRODUCT`, `QTY`, "
-                "`UNIT PRICE`, `LINE TOTAL`) with **4 rows** — header, loop-open, "
-                "the data row, loop-close:"
+                "Products table — 5 columns, 4 rows (header, loop-open, data, loop-close):"
             )
             st.code(
-                "Row 1:  CODE | PRODUCT | QTY | UNIT PRICE | LINE TOTAL\n"
-                "Row 2:  {%tr for item in items %}\n"
-                "Row 3:  {{ item.code }} | {{ item.product }} | {{ item.qty }} | "
+                "{%tr for item in items %}\n"
+                "{{ item.code }} | {{ item.product }} | {{ item.qty }} | "
                 "{{ item.unit_price }} | {{ item.line_total }}\n"
-                "Row 4:  {%tr endfor %}",
+                "{%tr endfor %}",
                 language="jinja2",
             )
-            st.warning(
-                "Write it as `{%tr for item in items %}` — **no space** after `{%`, "
-                "and put it in a row of its own. `{% tr ... %}` with a space is not "
-                "recognised by docxtpl and rendering fails with *unknown tag 'tr'*.",
-                icon="⚠️",
-            )
             st.caption(
-                "Don't want to build this by hand? Run `python create_template.py` "
-                "to generate a correctly-tagged `template.docx`."
+                "Write `{%tr` with **no space** after `{%`, in a row of its own — "
+                "`{% tr %}` fails with *unknown tag 'tr'*. "
+                "Or just run `python create_template.py`."
             )
-
-        st.divider()
-        st.markdown("### 🧭 How it works")
-        st.markdown(
-            "1. Paste the raw order text\n"
-            "2. GitHub Models extracts structured JSON\n"
-            "3. Totals are **recomputed in Python**, never copied\n"
-            "4. `docxtpl` fills your Word template\n"
-            "5. Download the finished invoice"
-        )
 
         return uploaded_template, model_choice
 
@@ -681,15 +656,7 @@ def main():
         """
         <div class="hero">
             <h1>🧾 AI Invoice Generator</h1>
-            <p>Paste messy order notes — get a clean, correctly-costed Word invoice.
-            Powered by <b>GitHub Models</b>, rendered into your own
-            <b>.docx</b> template with <b>docxtpl</b>.</p>
-            <div class="pills">
-                <span class="pill">⚡ GitHub Models</span>
-                <span class="pill">🧠 gpt-4.1</span>
-                <span class="pill">🧮 Totals verified in Python</span>
-                <span class="pill">📄 Word output</span>
-            </div>
+            <p>Paste messy order notes — get a clean, correctly-costed Word invoice.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -697,58 +664,22 @@ def main():
 
     uploaded_template, model_choice = render_sidebar()
 
-    c1, c2 = st.columns([2.1, 1], gap="large")
+    st.markdown("### ✍️ Order Text")
+    raw_text = st.text_area(
+        "Raw order text",
+        value=SAMPLE_INPUT,
+        height=340,
+        label_visibility="collapsed",
+        placeholder="Paste the customer's order here…",
+    )
 
-    with c1:
-        st.markdown("### ✍️ Raw Order Text")
-        st.caption(
-            "Free-form is fine — names, address, quantities, prices and status notes "
-            "in any layout. The model does the tidying."
-        )
-        raw_text = st.text_area(
-            "Raw order text",
-            value=SAMPLE_INPUT,
-            height=380,
-            label_visibility="collapsed",
-            placeholder="Paste the customer's order here…",
-        )
-
-    with c2:
-        st.markdown("### 🎯 What you get")
-        st.markdown(
-            """
-            <div class="card">
-                <h4>🏷️ Smart product codes</h4>
-                <p>Generated per item — <code>Retatrutide → RETA40</code>,
-                <code>NAD Nasal → NADN</code>.</p>
-            </div>
-            <div class="card">
-                <h4>📚 Catalogue names</h4>
-                <p>Shorthand is expanded — <code>GLOW → Glow Pen</code>,
-                <code>BPC Nasal → BPC-157 Nasal</code>.</p>
-            </div>
-            <div class="card">
-                <h4>🧮 Corrected maths</h4>
-                <p>Every total is recomputed in Python, so a typo'd
-                <code>£3,300</code> lands as the true <code>£3,200.00</code>.</p>
-            </div>
-            <div class="card">
-                <h4>✨ Clean statuses</h4>
-                <p><code>Payment awaiting → Awaiting Payment</code>,
-                <code>Ready for delivery → Ready for Dispatch</code>.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("")
-    b1, b2 = st.columns([1, 3])
+    b1, b2, _ = st.columns([1.2, 1, 2.6])
     with b1:
         generate = st.button(
             "🚀  Generate Invoice", type="primary", use_container_width=True
         )
     with b2:
-        if st.button("🧹  Clear results", use_container_width=False):
+        if st.button("Clear", use_container_width=True):
             st.session_state.pop("result", None)
             st.rerun()
 

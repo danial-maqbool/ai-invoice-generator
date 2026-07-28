@@ -5,6 +5,8 @@ notes.txt
 # Generated / temporary artefacts
 temp_template.docx
 _test_output.docx
+_preview.docx
+_preview.pdf
 Invoice_*.docx
 Invoice_*.json
 
