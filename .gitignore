@@ -1,0 +1,26 @@
+# Secrets — never commit the real token
+.env
+notes.txt
+
+# Generated / temporary artefacts
+temp_template.docx
+_test_output.docx
+Invoice_*.docx
+Invoice_*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

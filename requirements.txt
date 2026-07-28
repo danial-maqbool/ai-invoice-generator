@@ -1,0 +1,8 @@
+# AI-Powered Invoice Generator — dependencies
+# Install with:  pip install -r requirements.txt
+
+streamlit>=1.36,<2
+openai>=1.40,<2
+docxtpl>=0.17,<1
+python-docx>=1.1,<2
+python-dotenv>=1.0,<2
