@@ -9,6 +9,7 @@ _preview.docx
 _preview.pdf
 Invoice_*.docx
 Invoice_*.json
+Invoice_*.pdf
 
 # Python
 __pycache__/
@@ -26,3 +27,8 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# Working notes / source material — not needed to run the app
+instructions.md
+reference input.txt
+reference invoice.pdf
