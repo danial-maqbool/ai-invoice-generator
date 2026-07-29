@@ -39,6 +39,7 @@ is actually correct** (`£3,300` in the note above is a typo; the real total is
 | ✨ **Standardised statuses** | `Payment awaiting → Awaiting Payment`, `Ready for delivery → Ready for Dispatch`. |
 | 📮 **Address cleanup** | `flat 21, / 46 falcon road / sw11 2lr` → `Flat 21, 46 Falcon Road` / `SW11 2LR`. |
 | 📄 **Your own template** | Bring any Jinja2-tagged `.docx`, or generate the included one. |
+| 📥 **Word, PDF or JSON** | Download the invoice as `.docx`, as a ready-to-send `.pdf`, or grab the raw extracted JSON. |
 | 🎨 **Polished UI** | Streamlit with a custom theme, live metrics, tabbed JSON/table views and one-click download. |
 
 ---
@@ -182,6 +183,21 @@ Two constraints are worth knowing if you edit `create_template.py`:
   would clip any address that outgrew them.
 
 ---
+
+## 📥 PDF export
+
+The results panel offers **PDF**, **Word** and **JSON** downloads. There is no
+reliable pure-Python `.docx → .pdf` renderer, so the app drives a real office
+suite and picks whichever is installed:
+
+| Platform | Requirement |
+|---|---|
+| Windows | Microsoft Word + `pywin32` (installed by `requirements.txt`) |
+| macOS / Linux | LibreOffice (`brew install --cask libreoffice` / `apt install libreoffice`) |
+
+Word is tried first — it renders the template's rounded VML panels exactly.
+If neither is available the app still works normally; the PDF button is simply
+replaced by a note telling you to export from Word yourself.
 
 ## 🗂 Project structure
 

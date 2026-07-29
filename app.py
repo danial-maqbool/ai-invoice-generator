@@ -12,6 +12,9 @@ import os
 import io
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime
 
 import streamlit as st
@@ -576,6 +579,98 @@ def generate_document(data_dict: dict, template_source) -> bytes:
     return buffer.getvalue()
 
 
+# --------------------------------------------------------------------------- #
+#  PDF conversion
+#
+#  There is no reliable pure-Python .docx -> .pdf renderer, so we drive a real
+#  office suite. Word is tried first because it renders the template's VML
+#  rounded panels exactly; LibreOffice is the cross-platform fallback.
+# --------------------------------------------------------------------------- #
+SOFFICE_CANDIDATES = (
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/usr/bin/soffice",
+    "/usr/bin/libreoffice",
+)
+
+
+def _find_soffice() -> str | None:
+    for name in ("soffice", "libreoffice"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return next((p for p in SOFFICE_CANDIDATES if os.path.exists(p)), None)
+
+
+def _pdf_via_word(src: str, dst: str) -> bool:
+    """Microsoft Word via COM (Windows only). Best fidelity for the template."""
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        return False
+
+    # Streamlit runs the script on a worker thread, which must initialise COM.
+    pythoncom.CoInitialize()
+    word = None
+    try:
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = False
+        doc = word.Documents.Open(src, False, True)
+        doc.SaveAs(dst, 17)  # 17 = wdFormatPDF
+        doc.Close(False)
+        return os.path.exists(dst)
+    finally:
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:  # noqa: BLE001 - nothing useful to do on teardown
+                pass
+        pythoncom.CoUninitialize()
+
+
+def _pdf_via_soffice(src: str, dst: str) -> bool:
+    exe = _find_soffice()
+    if not exe:
+        return False
+    subprocess.run(
+        [exe, "--headless", "--norestore", "--convert-to", "pdf",
+         "--outdir", os.path.dirname(dst), src],
+        check=True, capture_output=True, timeout=180,
+    )
+    return os.path.exists(dst)
+
+
+def convert_to_pdf(docx_bytes: bytes) -> bytes | None:
+    """Render the .docx to PDF, or return None when no converter is available."""
+    with tempfile.TemporaryDirectory() as workdir:
+        src = os.path.join(workdir, "invoice.docx")
+        dst = os.path.join(workdir, "invoice.pdf")
+        with open(src, "wb") as f:
+            f.write(docx_bytes)
+
+        for backend in (_pdf_via_word, _pdf_via_soffice):
+            try:
+                if backend(src, dst):
+                    with open(dst, "rb") as f:
+                        return f.read()
+            except Exception:  # noqa: BLE001 - fall through to the next backend
+                continue
+    return None
+
+
+def pdf_converter_name() -> str | None:
+    """Which converter this machine can use, for messaging in the UI."""
+    try:
+        import win32com  # noqa: F401
+        if os.name == "nt":
+            return "Microsoft Word"
+    except ImportError:
+        pass
+    return "LibreOffice" if _find_soffice() else None
+
+
 def safe_filename(customer_name: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9 _-]", "", customer_name or "Customer").strip()
     cleaned = re.sub(r"\s+", "_", cleaned) or "Customer"
@@ -654,7 +749,10 @@ def render_sidebar():
 # --------------------------------------------------------------------------- #
 #  Results
 # --------------------------------------------------------------------------- #
-def render_results(data: dict, docx_bytes: bytes, check: dict, model_used: str):
+def render_results(
+    data: dict, docx_bytes: bytes, check: dict, model_used: str,
+    pdf_bytes: bytes | None = None,
+):
     st.markdown("---")
     st.markdown("## 📊 Results")
 
@@ -729,17 +827,31 @@ def render_results(data: dict, docx_bytes: bytes, check: dict, model_used: str):
     with right:
         st.markdown("### 📥 Your Invoice")
         file_name = safe_filename(data.get("customer_name", ""))
+
+        sizes = f"{len(docx_bytes) / 1024:.0f} KB Word"
+        if pdf_bytes:
+            sizes += f" · {len(pdf_bytes) / 1024:.0f} KB PDF"
         st.markdown(
             f"""
             <div class="card">
                 <h4>✅ Document ready</h4>
-                <p><b>{file_name}</b><br>{len(docx_bytes) / 1024:.1f} KB · Microsoft Word</p>
+                <p><b>{file_name.rsplit('.', 1)[0]}</b><br>{sizes}</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        if pdf_bytes:
+            st.download_button(
+                label="⬇️  Download PDF",
+                data=pdf_bytes,
+                file_name=file_name.replace(".docx", ".pdf"),
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
         st.download_button(
-            label="⬇️  Download Invoice (.docx)",
+            label="⬇️  Download Word (.docx)",
             data=docx_bytes,
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -752,10 +864,16 @@ def render_results(data: dict, docx_bytes: bytes, check: dict, model_used: str):
             mime="application/json",
             use_container_width=True,
         )
-        st.caption(
-            "Open the `.docx` in Word to review before sending. Re-run the "
-            "generator to get a fresh invoice number."
-        )
+
+        if not pdf_bytes:
+            converter = pdf_converter_name()
+            st.caption(
+                "PDF conversion failed — download the `.docx` and export from "
+                f"{converter} instead."
+                if converter else
+                "PDF export needs Microsoft Word or LibreOffice installed. "
+                "Install LibreOffice, or open the `.docx` and save as PDF."
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -846,9 +964,15 @@ def main():
             )
             st.stop()
 
+        pdf_bytes = None
+        if pdf_converter_name():
+            with st.spinner("🖨️ Converting to PDF…"):
+                pdf_bytes = convert_to_pdf(docx_bytes)
+
         st.session_state["result"] = {
             "data": data,
             "docx": docx_bytes,
+            "pdf": pdf_bytes,
             "check": check,
             "model": model_used,
         }
@@ -856,7 +980,10 @@ def main():
 
     if "result" in st.session_state:
         result = st.session_state["result"]
-        render_results(result["data"], result["docx"], result["check"], result["model"])
+        render_results(
+            result["data"], result["docx"], result["check"],
+            result["model"], result.get("pdf"),
+        )
 
     st.markdown(
         '<div class="footer-note">Built with Streamlit · GitHub Models · docxtpl</div>',
