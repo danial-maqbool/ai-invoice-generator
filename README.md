@@ -46,6 +46,10 @@ is actually correct** (`£3,300` in the note above is a typo; the real total is
 
 ## 🚀 Quick Start
 
+> **New to this, or setting up a fresh Windows PC?**
+> Follow **[SETUP.md](SETUP.md)** instead — a click-by-click guide with
+> troubleshooting. The steps below are the short version.
+
 ### 1. Clone
 
 ```bash
