@@ -220,7 +220,55 @@ Order Total: £3,200.00
 correct £3,200.00 was used instead. Always recompute.)
 --------------------------------------------------------------------
 
-Instructions:
+--------------------------------------------------------------------
+INPUT IS FREE-FORM. The order above is only ONE possible layout. Real notes
+arrive in many shapes and you must handle all of them without dropping data.
+--------------------------------------------------------------------
+
+Work through the note line by line before you answer, and account for EVERY
+line. Nothing that describes an ordered product may be omitted, merged with
+another product, or silently skipped. If the note lists 14 products, the JSON
+has exactly 14 items — never summarise, never truncate, never de-duplicate two
+genuinely separate lines.
+
+Expect and correctly parse any of these variations:
+
+• Quantity/product/price written in any order or notation:
+    "70 × Retatrutide – £2,100 (£30 each)"      "Retatrutide x70 @ £30"
+    "70x Retatrutide £30ea"                      "Qty 70 - Retatrutide - 30.00"
+    "- 70 Retatrutide ....... 2100"              "Retatrutide (70) 30.00 2100.00"
+  Separators may be ×, x, X, *, @, -, –, —, |, tabs, dots or commas.
+  Items may be bulleted (-, •, *, 1., a)) or plain lines, one or many per line.
+
+• Prices with or without a symbol, with or without decimals, with or without
+  thousands separators: "£30", "30", "30.00", "£2,100", "2100.00", "GBP 30".
+  Currency may be £, $, € or a code; use whatever the note uses and report it
+  in currency_symbol (default "£" if none is given).
+
+• Missing figures — derive whatever is absent, never guess wildly:
+    - unit price given, no line total  -> line_total = qty × unit_price
+    - line total given, no unit price  -> unit_price = line_total ÷ qty
+    - both given but inconsistent      -> TRUST qty × unit_price
+    - qty absent entirely              -> qty = 1
+  "each", "ea", "per", "@", "p/u" all introduce a UNIT price.
+  A bare second number on a line is normally the LINE TOTAL, not a unit price.
+
+• Labels that may or may not be present, in any wording or case:
+    name      — "Customer:", "Client:", "Ship to:", "Deliver to:", "For:", or
+                simply the first non-label line of the note
+    address   — one line or many, comma-separated or line-broken
+    reseller  — "Reseller J/L", "Reseller: J/L", "Ref J/L", "Agent: J/L", "J/L"
+    status    — "(Payment awaiting)", "PAID", "unpaid", "awaiting funds",
+                "ready for delivery", "ready to ship", "shipped", "on hold"
+  Statuses may sit anywhere in the note, together on one line or apart.
+
+• Noise to ignore: greetings, phone numbers, emails, order dates, tracking
+  numbers, "thanks", running commentary, and any stated total (always wrong
+  until you verify it). Never turn a note or comment into a line item.
+
+• A stated total, subtotal or "balance" is NEVER copied. Recompute it.
+
+Then produce each field as follows.
 
 1. customer_name — the customer's full name, in Title Case.
 
@@ -260,9 +308,13 @@ Instructions:
         "BPC Nasal"          -> "BPC-157 Nasal"
         "PT-141 Nasal"       -> "PT-141 Nasal"
         "Kisspeptin Nasal"   -> "Kisspeptin Nasal"
+     Match on meaning, not spelling: the note may abbreviate, misspell, change
+     case, or omit the format ("retat", "Reta 40", "glow nasal spray",
+     "kisspeptin ns", "bpc157"). Map it to the catalogue entry it clearly means.
      For any product NOT in the catalogue, write it in Title Case, keep any
      dosage/format wording present in the note, and append " Nasal" only if the
-     note says nasal.
+     note says nasal. Never invent a product that isn't in the note, and never
+     drop one because you are unsure of its name — carry it through as written.
 
    - code: a SHORT uppercase alphanumeric code you generate for the product.
      Use these exact codes for catalogue items:
@@ -300,6 +352,15 @@ Instructions:
 11. currency_symbol: the currency symbol in use, e.g. "£".
 12. total_items: the number of distinct line items (integer).
 13. total_units: the sum of all quantities (integer).
+
+BEFORE YOU ANSWER, re-read the raw note once more and confirm:
+  - every product line in the note appears exactly once in "items";
+  - no item has a missing or zero qty, unit_price or line_total;
+  - every line_total equals qty × unit_price;
+  - order_total equals the sum of the line totals;
+  - the customer name, address, reseller and both statuses are populated
+    (use the stated defaults only when genuinely absent from the note).
+Fix anything that fails before returning. Return the corrected JSON only.
 
 Return ONLY a valid JSON object with exactly these keys:
 {{
@@ -400,7 +461,35 @@ def _fmt_money(amount: float, symbol: str = "£") -> str:
     return f"{symbol}{amount:,.2f}"
 
 
-def verify_and_correct_totals(data: dict) -> dict:
+# A line that looks like an order line: some quantity notation plus a price.
+_QTY_LINE = re.compile(
+    r"""(?:^|\s)(?:                       # quantity, written any of these ways
+            \d+\s*(?:[x×*]|\bea\b|\bpcs\b)   # 70x / 70 ×
+          | (?:[x×*])\s*\d+                  # x70
+          | (?:qty|quantity)\s*[:=]?\s*\d+   # qty 70
+        )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+_TOTAL_LINE = re.compile(r"^\s*(?:sub)?total\b|^\s*balance\b", re.IGNORECASE)
+
+
+def count_probable_item_lines(raw_text: str) -> int:
+    """
+    Rough count of order lines in the raw note, used only to warn when the
+    model appears to have dropped one. Deliberately conservative: it counts a
+    line only when a quantity notation is present, so it under-counts rather
+    than raising false alarms on prose.
+    """
+    lines = 0
+    for line in raw_text.splitlines():
+        if not line.strip() or _TOTAL_LINE.search(line):
+            continue
+        if _QTY_LINE.search(line):
+            lines += 1
+    return lines
+
+
+def verify_and_correct_totals(data: dict, raw_text: str = "") -> dict:
     """
     Recompute every total in pure Python and overwrite the model's figures.
 
@@ -415,14 +504,24 @@ def verify_and_correct_totals(data: dict) -> dict:
 
     running = 0.0
     for item in items:
+        name = item.get("product", "item")
         qty = int(_money_to_float(item.get("qty")))
         unit = _money_to_float(item.get("unit_price"))
-        expected = _fmt_money(qty * unit, symbol)
+        stated_line = _money_to_float(item.get("line_total"))
 
+        # Free-form notes often omit one of the three figures. Derive whichever
+        # is missing rather than letting a zero silently wipe out the line.
+        if qty <= 0:
+            qty = round(stated_line / unit) if unit > 0 and stated_line > 0 else 1
+            corrections.append(f"{name}: quantity missing → {qty}")
+        if unit <= 0 and stated_line > 0:
+            unit = stated_line / qty
+            corrections.append(f"{name}: unit price derived → {_fmt_money(unit, symbol)}")
+
+        expected = _fmt_money(qty * unit, symbol)
         if str(item.get("line_total", "")).strip() != expected:
             corrections.append(
-                f"{item.get('product', 'item')}: line total "
-                f"{item.get('line_total')} → {expected}"
+                f"{name}: line total {item.get('line_total') or '—'} → {expected}"
             )
             item["line_total"] = expected
 
@@ -440,6 +539,9 @@ def verify_and_correct_totals(data: dict) -> dict:
     data["total_items"] = len(items)
     data["total_units"] = units
 
+    detected = count_probable_item_lines(raw_text) if raw_text else 0
+    missing = max(0, detected - len(items))
+
     return {
         "computed": running,
         "model_total": model_total,
@@ -447,6 +549,8 @@ def verify_and_correct_totals(data: dict) -> dict:
         "corrections": corrections,
         "units": units,
         "lines": len(items),
+        "detected_lines": detected,
+        "missing_lines": missing,
     }
 
 
@@ -561,6 +665,14 @@ def render_results(data: dict, docx_bytes: bytes, check: dict, model_used: str):
     m4.metric("Order Total", check["final_total"])
 
     st.caption(f"Extracted with `{model_used}` · totals recomputed locally in Python")
+
+    if check.get("missing_lines"):
+        st.error(
+            f"**Possible missing items.** The note looks like it contains "
+            f"{check['detected_lines']} order lines but only {check['lines']} were "
+            f"extracted. Check the line items below before sending this invoice.",
+            icon="🔎",
+        )
 
     if check["corrections"]:
         st.warning(
@@ -717,7 +829,7 @@ def main():
             st.stop()
 
         # Recompute all arithmetic in Python before it ever reaches the document.
-        check = verify_and_correct_totals(data)
+        check = verify_and_correct_totals(data, raw_text)
         data.setdefault("company_name", COMPANY_NAME)
 
         try:

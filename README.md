@@ -32,6 +32,7 @@ is actually correct** (`£3,300` in the note above is a typo; the real total is
 | | |
 |---|---|
 | 🧠 **GitHub Models** | Uses the OpenAI-compatible GitHub Models endpoint. Auto-selects the best model your token can reach. |
+| 🧾 **Handles any input format** | Bullets, tables, `x70`, `70 ×`, `@ £30`, `qty: 70`, missing unit prices, inline or multi-line addresses, `$`/`€`/`£`, and surrounding chit-chat. Missing figures are derived; a dropped line is flagged. |
 | 🧮 **Arithmetic that's actually right** | Every line total and the order total are recomputed **in Python**, so a wrong figure never reaches the document — regardless of what the model says. |
 | 🏷️ **Generated product codes** | `Retatrutide 40mg Pen → RETA40`, `NAD+ Nasal → NADN`, `BPC/TB-500 Nasal → BPCTB`. |
 | 📚 **Catalogue expansion** | Shorthand becomes the full product name: `GLOW → Glow Pen`, `BPC Nasal → BPC-157 Nasal`. |
@@ -164,6 +165,21 @@ invoice. Open it in Word and restyle it however you like — just keep the tags.
 
 Multi-line values (the address) are converted from `\n` to `\a` before rendering,
 which is how Word represents a soft line break inside a single paragraph.
+
+### Rounded corners
+
+Word table cells are always square, so the info panels are **VML rounded
+rectangles** (`v:roundrect`) with their content inside the shape's text box.
+`docxtpl` renders `{{ tags }}` inside `w:txbxContent` like any other text.
+
+Two constraints are worth knowing if you edit `create_template.py`:
+
+- **A text box inside a text box makes Word declare the file corrupt.** The
+  status values were originally pills nested inside the status panel; they are
+  now plain bold text for this reason. A *table* inside a text box is fine.
+- Each row is **one full-width panel containing a two-column table**, not two
+  side-by-side shapes. Separate shapes would need matching fixed heights and
+  would clip any address that outgrew them.
 
 ---
 

@@ -2,8 +2,10 @@
 Builds `template.docx` — the Jinja2-tagged Word template the app renders into.
 
 The layout is a faithful recreation of the reference invoice: greyscale, a
-two-column header, soft grey info cards, outlined status badges, a products
-table with horizontal rules only, and a right-aligned order total.
+two-column header over a heavy rule, rounded grey info panels, a products table
+with a dark header band and horizontal rules only, and a right-aligned order
+total. Corners are rounded via VML shapes, since Word table cells are always
+square.
 
 Run once after cloning:
 
@@ -16,9 +18,10 @@ the {{ tags }} and the {%tr for item in items %} loop rows intact.
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import nsdecls, qn
 from docx.shared import Pt, RGBColor, Inches
+from docx.text.paragraph import Paragraph
 
 OUTPUT = "template.docx"
 
@@ -32,13 +35,13 @@ CARD_FILL = "F5F5F5"                  # info card background
 HEAD_FILL = "222222"                  # products table header band
 RULE = "DCDCDC"                       # hairline row rules
 STRONG = "222222"                     # heavy structural rules
-BADGE_EDGE = "B0B0B0"                 # status badge outline
 
 HAIRLINE = 4      # 0.5pt — row separators
 MEDIUM = 8        # 1.0pt — card edges
 HEAVY = 16        # 2.0pt — header underline, totals rule
 
 CELL_PAD = 115    # products table cell padding, in twentieths of a point
+CARD_WIDTH = 238  # rounded card width, in points (3.35in column, less a hair)
 
 CONTENT_WIDTH = Inches(7.0)
 
@@ -103,11 +106,102 @@ def clear_borders(cell):
     set_borders(cell)
 
 
-def card(cell):
-    """Style a cell as a soft grey info card."""
-    shade(cell, CARD_FILL)
-    set_borders(cell, top=RULE, bottom=RULE, left=RULE, right=RULE, size=MEDIUM)
-    pad(cell, 150)
+# --------------------------------------------------------------------------- #
+#  Rounded boxes
+#
+#  Word table cells are always square-cornered, so the info cards and status
+#  pills are VML rounded rectangles (v:roundrect) with the content living in the
+#  shape's text box. docxtpl renders tags inside w:txbxContent like any other
+#  text, so the {{ placeholders }} still work.
+# --------------------------------------------------------------------------- #
+VML_NS = 'xmlns:v="urn:schemas-microsoft-com:vml"'
+
+ARC_CARD = "6554f"    # ~10% corner radius — a soft card
+
+
+class BoxContent:
+    """
+    A stand-in container that quacks like a table cell.
+
+    It collects paragraphs so the same para()/run() helpers used elsewhere can
+    build the inside of a shape, which is then moved into w:txbxContent.
+    """
+
+    def __init__(self):
+        self._paragraphs = [self._blank()]
+
+    @staticmethod
+    def _blank():
+        return Paragraph(parse_xml(f"<w:p {nsdecls('w')}/>"), None)
+
+    @property
+    def paragraphs(self):
+        return self._paragraphs
+
+    def add_paragraph(self):
+        p = self._blank()
+        self._paragraphs.append(p)
+        return p
+
+
+def _roundrect(width_pt, height_pt, *, fill, stroke, stroke_pt, arc, inset, fit=True):
+    """A <w:p> holding a single rounded rectangle shape with an empty text box."""
+    stroke_attr = (
+        f'strokecolor="#{stroke}" strokeweight="{stroke_pt}pt"' if stroke else 'stroked="f"'
+    )
+    # mso-fit-shape-to-text lets the panel grow with its contents, so a long
+    # address can never be clipped the way a fixed height would clip it.
+    autofit = ";mso-fit-shape-to-text:t" if fit else ""
+    return parse_xml(
+        f"<w:p {nsdecls('w')} {VML_NS}>"
+        f'<w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
+        f"<w:r><w:pict>"
+        f'<v:roundrect style="width:{width_pt}pt;height:{height_pt}pt;v-text-anchor:top{autofit}" '
+        f'arcsize="{arc}" fillcolor="#{fill}" {stroke_attr}>'
+        f'<v:textbox inset="{inset}" style="mso-fit-shape-to-text:t"><w:txbxContent/></v:textbox>'
+        f"</v:roundrect>"
+        f"</w:pict></w:r></w:p>"
+    )
+
+
+def _place(shape_p, doc):
+    """Drop a shape paragraph into the document body."""
+    placeholder = doc.add_paragraph()
+    placeholder._p.addprevious(shape_p)
+    placeholder._p.getparent().remove(placeholder._p)
+
+
+def rounded_panel(doc, build_left, build_right, *, min_height=44):
+    """
+    A full-width rounded panel holding two columns of content.
+
+    Both columns live inside one shape rather than in two side-by-side shapes:
+    separate shapes would need matching fixed heights, and any content that
+    outgrew them would be clipped. A table inside a text box is legal in Word
+    (unlike a text box inside a text box, which corrupts the file).
+    """
+    scratch = Document()
+    inner = scratch.add_table(rows=1, cols=3)
+    fixed_width(inner, [Inches(3.15), Inches(0.35), Inches(3.15)])
+    borderless(inner)
+    for cell in inner.rows[0].cells:
+        pad(cell, 0)
+
+    build_left(inner.cell(0, 0))
+    build_right(inner.cell(0, 2))
+
+    shape_p = _roundrect(
+        504, min_height,
+        fill=CARD_FILL, stroke=RULE, stroke_pt=1, arc=ARC_CARD,
+        inset="12pt,10pt,12pt,10pt",
+    )
+    txbx = shape_p.find(f".//{qn('w:txbxContent')}")
+    txbx.append(inner._tbl)
+    # A text box's content must end with a paragraph, never a table.
+    txbx.append(parse_xml(f"<w:p {nsdecls('w')}><w:pPr><w:spacing w:after=\"0\" "
+                          f'w:line="120" w:lineRule="exact"/></w:pPr></w:p>'))
+
+    _place(shape_p, doc)
 
 
 def pad(cell, twips):
@@ -215,38 +309,11 @@ def card_label(cell, text):
     run(p, text, size=7.5, bold=True, color=MUTED, caps=True, spacing=18)
 
 
-def status_badge(cell, tag):
-    """An outlined pill holding the status value, as in the reference."""
-    badge = cell.add_table(rows=1, cols=1)
-    badge.autofit = False
-    b = badge.cell(0, 0)
-    b.width = Inches(1.7)
-    shade(b, "FFFFFF")
-    set_borders(
-        b, top=BADGE_EDGE, bottom=BADGE_EDGE, left=BADGE_EDGE,
-        right=BADGE_EDGE, size=MEDIUM,
-    )
-    pad(b, 85)
-    p = para(b, first=True)
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run(p, tag, size=10, bold=True, color=INK)
+def status_value(box, tag):
+    p = para(box)
+    run(p, tag, size=12, bold=True, color=INK)
 
 
-def two_cards(doc, build_left, build_right):
-    """A row of two cards separated by an invisible gutter."""
-    table = doc.add_table(rows=1, cols=3)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    fixed_width(table, [Inches(3.35), Inches(0.3), Inches(3.35)])
-    borderless(table)
-
-    left, gutter, right = table.cell(0, 0), table.cell(0, 1), table.cell(0, 2)
-    card(left)
-    card(right)
-    clear_borders(gutter)
-
-    build_left(left)
-    build_right(right)
-    return table
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +325,11 @@ def build():
     normal = doc.styles["Normal"]
     normal.font.name = "Calibri"
     normal.font.size = Pt(10)
+    # The stock Normal style carries 8pt space-after and 1.08 line spacing, which
+    # silently inflates content inside the fixed-height cards until it clips.
+    normal.paragraph_format.space_before = Pt(0)
+    normal.paragraph_format.space_after = Pt(0)
+    normal.paragraph_format.line_spacing = 1.0
 
     section = doc.sections[0]
     section.top_margin = Inches(0.75)
@@ -289,35 +361,32 @@ def build():
     rule(doc, space_before=2, space_after=14)
 
     # ------------------------------------------------------- reseller / customer
-    def reseller(cell):
-        card_label(cell, "Reseller")
-        p = para(cell)
+    def reseller(box):
+        card_label(box, "Reseller")
+        p = para(box)
         run(p, "{{ reseller_info }}", size=12, bold=True, color=INK)
-        # Keeps this card the same height as the taller customer card.
-        para(cell, space_before=2)
-        para(cell, space_before=2)
 
-    def customer(cell):
-        card_label(cell, "Customer / Receiver")
-        p = para(cell)
+    def customer(box):
+        card_label(box, "Customer / Receiver")
+        p = para(box)
         run(p, "{{ customer_name }}", size=12, bold=True, color=INK)
-        a = para(cell, space_before=3)
+        a = para(box, space_before=3)
         run(a, "{{ customer_address }}", size=9.5, color=MUTED)
 
-    two_cards(doc, reseller, customer)
-    para(doc, space_after=6)
+    rounded_panel(doc, reseller, customer, min_height=64)
+    para(doc, space_after=5)
 
     # ---------------------------------------------------------------- statuses
-    def payment(cell):
-        card_label(cell, "Payment Status")
-        status_badge(cell, "{{ payment_status }}")
+    def payment(box):
+        card_label(box, "Payment Status")
+        status_value(box, "{{ payment_status }}")
 
-    def shipping(cell):
-        card_label(cell, "Shipping Status")
-        status_badge(cell, "{{ shipping_status }}")
+    def shipping(box):
+        card_label(box, "Shipping Status")
+        status_value(box, "{{ shipping_status }}")
 
-    two_cards(doc, payment, shipping)
-    para(doc, space_after=10)
+    rounded_panel(doc, payment, shipping, min_height=40)
+    para(doc, space_after=9)
 
     # ---------------------------------------------------------------- products
     heading = para(doc, space_after=6)
