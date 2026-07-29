@@ -15,6 +15,9 @@ You can open template.docx in Word afterwards and restyle it freely; just keep
 the {{ tags }} and the {%tr for item in items %} loop rows intact.
 """
 
+import io
+import os
+
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
@@ -24,6 +27,12 @@ from docx.shared import Pt, RGBColor, Inches
 from docx.text.paragraph import Paragraph
 
 OUTPUT = "template.docx"
+
+# Masthead logo. Embedded straight into the template — it never changes per
+# invoice, so it needs no Jinja tag. If the file is missing the build falls
+# back to the {{ company_name }} text so the template is still usable.
+LOGO_FILE = "logo.jpeg"
+LOGO_WIDTH = Inches(2.7)
 
 # Greyscale palette taken from the reference invoice.
 INK = RGBColor(0x11, 0x11, 0x11)      # headings / primary text
@@ -303,6 +312,34 @@ def rule(doc, *, colour=STRONG, size=HEAVY, space_before=0, space_after=0):
 # --------------------------------------------------------------------------- #
 #  Building blocks
 # --------------------------------------------------------------------------- #
+def trimmed_logo(path):
+    """
+    The supplied logo has a wide white margin baked into the JPEG, which would
+    push the mark away from the page margin and leave the masthead looking
+    indented. Crop to the artwork so it sits flush left.
+
+    Returns a file-like object, or the original path if Pillow isn't installed.
+    """
+    try:
+        from PIL import Image, ImageChops
+    except ImportError:
+        return path
+
+    image = Image.open(path).convert("RGB")
+    white = Image.new("RGB", image.size, (255, 255, 255))
+    mask = ImageChops.difference(image, white).convert("L").point(
+        lambda p: 255 if p > 12 else 0
+    )
+    box = mask.getbbox()
+    if not box:
+        return path
+
+    buffer = io.BytesIO()
+    image.crop(box).save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+
 def card_label(cell, text):
     """Small uppercase letterspaced label — the eyebrow above each card value."""
     p = para(cell, first=True, space_after=4)
@@ -346,7 +383,12 @@ def build():
     masthead = header.cell(0, 0).merge(header.cell(2, 0))
     masthead.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
     title = para(masthead, first=True)
-    run(title, "{{ company_name }}", size=21, bold=True, color=INK)
+
+    logo = os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
+    if os.path.exists(logo):
+        title.add_run().add_picture(trimmed_logo(logo), width=LOGO_WIDTH)
+    else:
+        run(title, "{{ company_name }}", size=21, bold=True, color=INK)
 
     kind = para(header.cell(0, 1), first=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
     run(kind, "Invoice", size=10, bold=True, color=MUTED, caps=True, spacing=60)

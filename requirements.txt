@@ -7,6 +7,9 @@ docxtpl>=0.17,<1
 python-docx>=1.1,<2
 python-dotenv>=1.0,<2
 
+# Used by create_template.py to trim the white margin off the masthead logo.
+Pillow>=10.0
+
 # Optional — enables PDF export by driving Microsoft Word on Windows.
 # On macOS/Linux, install LibreOffice instead and the app will use that.
 # Without either, the app still works; only the PDF button is hidden.
